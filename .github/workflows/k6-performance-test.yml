@@ -1,0 +1,300 @@
+name: K6 Performance Test
+
+on:
+  schedule:
+    # Executa diariamente às 2h da manhã (UTC)
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Permite execução manual
+  push:
+    branches:
+      - main
+    paths:
+      - 'k6_script.js'
+      - '.github/workflows/k6-performance-test.yml'
+
+jobs:
+  performance_load_test:
+    name: Performance Load Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install K6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Start InfluxDB 1.7
+        run: |
+          echo "Instalando e iniciando InfluxDB 1.7..."
+          docker run -d \
+            --name influxdb \
+            -p 8086:8086 \
+            -e INFLUXDB_DB=k6_metrics \
+            -e INFLUXDB_ADMIN_USER=admin \
+            -e INFLUXDB_ADMIN_PASSWORD=admin123456 \
+            -e INFLUXDB_HTTP_AUTH_ENABLED=true \
+            influxdb:1.7
+          
+          echo "Aguardando InfluxDB inicializar..."
+          sleep 10
+          
+          echo "Verificando se InfluxDB está rodando..."
+          for i in {1..30}; do
+            if curl -f http://localhost:8086/ping 2>/dev/null; then
+              echo "✅ InfluxDB está rodando!"
+              break
+            fi
+            echo "Aguardando... ($i/30)"
+            sleep 2
+          done
+          
+          # Cria o database se não existir
+          curl -X POST http://localhost:8086/query \
+            -u admin:admin123456 \
+            --data-urlencode "q=CREATE DATABASE IF NOT EXISTS k6_metrics" || true
+          
+          echo ""
+          echo "✅ InfluxDB 1.7 configurado automaticamente:"
+          echo "  URL: http://localhost:8086"
+          echo "  Usuário: admin"
+          echo "  Senha: admin123456"
+          echo "  Database: k6_metrics"
+
+      - name: Start Grafana
+        run: |
+          echo "Instalando e iniciando Grafana..."
+          docker run -d \
+            --name grafana \
+            -p 3000:3000 \
+            -e GF_SECURITY_ADMIN_USER=admin \
+            -e GF_SECURITY_ADMIN_PASSWORD=admin123 \
+            -e GF_INSTALL_PLUGINS= \
+            --link influxdb:influxdb \
+            grafana/grafana:latest
+          
+          echo "Aguardando Grafana inicializar..."
+          sleep 10
+          
+          echo "Configurando fonte de dados InfluxDB no Grafana..."
+          
+          # Aguarda Grafana estar pronto
+          for i in {1..30}; do
+            if curl -f http://localhost:3000/api/health 2>/dev/null; then
+              echo "✅ Grafana está rodando!"
+              break
+            fi
+            echo "Aguardando Grafana... ($i/30)"
+            sleep 2
+          done
+          
+          # Cria fonte de dados InfluxDB
+          echo "Configurando fonte de dados InfluxDB 1.7 no Grafana..."
+          
+          # Remove fonte de dados existente se houver
+          curl -X DELETE http://admin:admin123@localhost:3000/api/datasources/name/InfluxDB-K6 2>/dev/null || true
+          sleep 2
+          
+          # Cria nova fonte de dados InfluxDB 1.x
+          curl -X POST http://admin:admin123@localhost:3000/api/datasources \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "InfluxDB-K6",
+              "type": "influxdb",
+              "url": "http://influxdb:8086",
+              "access": "proxy",
+              "isDefault": true,
+              "database": "k6_metrics",
+              "user": "admin",
+              "secureJsonData": {
+                "password": "admin123456"
+              },
+              "jsonData": {
+                "httpMode": "POST"
+              }
+            }'
+          
+          # Testa a conexão
+          sleep 2
+          curl -X POST http://admin:admin123@localhost:3000/api/datasources/proxy/1/health \
+            -H "Content-Type: application/json" && echo "✅ Fonte de dados configurada e testada!" || echo "⚠️ Fonte de dados criada, mas teste falhou (pode ser normal)"
+          
+          echo ""
+          echo "✅ Grafana configurado:"
+          echo "  URL: http://localhost:3000"
+          echo "  Usuário: admin"
+          echo "  Senha: admin123"
+
+      - name: Run K6 performance test
+        run: |
+          echo "Executando teste com InfluxDB 1.7 local..."
+          echo "Os dados serão enviados ao InfluxDB em tempo real durante a execução."
+          echo "Mesmo se os thresholds falharem, os dados estarão disponíveis."
+          echo ""
+          echo "📊 Configuração do Teste:"
+          echo "  API: ${API_BASE_URL}${API_ENDPOINT}"
+          echo "  VUS: ${VUS}"
+          echo "  DURATION: ${DURATION}"
+          echo "  MAX_ERROR_RATE: ${MAX_ERROR_RATE}"
+          echo "  MAX_P95_LATENCY: ${MAX_P95_LATENCY}ms"
+          echo ""
+          # Executa o teste - K6 tem suporte nativo para InfluxDB 1.x
+          k6 run --out influxdb=http://admin:admin123456@localhost:8086/k6_metrics k6_script.js || K6_EXIT=$?
+          echo ""
+          echo "✅ Teste concluído. Dados enviados ao InfluxDB local."
+          echo ""
+          echo "Para visualizar os dados:"
+          echo "  Database: k6_metrics"
+          echo "  Usuário: admin"
+          echo "  Senha: admin123456"
+          # Não falha o workflow mesmo se thresholds falharem
+          exit 0
+        env:
+          VUS: ${{ vars.K6_VUS || '5' }}
+          DURATION: ${{ vars.K6_DURATION}}
+          ENVIRONMENT: ${{ vars.K6_ENVIRONMENT}}
+          API_BASE_URL: ${{ vars.K6_API_BASE_URL}}
+          API_ENDPOINT: ${{ vars.K6_API_ENDPOINT || '/posts' }}
+          MAX_ERROR_RATE: ${{ vars.K6_MAX_ERROR_RATE || '0.01' }}
+          MAX_P95_LATENCY: ${{ vars.K6_MAX_P95_LATENCY || '500' }}
+        continue-on-error: true
+
+      - name: Import K6 Dashboard
+        if: always()
+        run: |
+          echo "Importando dashboard do K6..."
+          
+          # Aguarda Grafana estar pronto
+          sleep 5
+          
+          # Obtém o UID da fonte de dados InfluxDB-K6
+          DS_UID=$(curl -s http://admin:admin123@localhost:3000/api/datasources/name/InfluxDB-K6 | jq -r '.uid // empty' 2>/dev/null || echo "")
+          
+          if [ -z "$DS_UID" ]; then
+            echo "⚠️ UID da fonte de dados não encontrado, tentando obter ID..."
+            DS_ID=$(curl -s http://admin:admin123@localhost:3000/api/datasources/name/InfluxDB-K6 | jq -r '.id // empty' 2>/dev/null || echo "")
+            if [ -n "$DS_ID" ]; then
+              DS_UID=$DS_ID
+            else
+              DS_UID="InfluxDB-K6"
+            fi
+          fi
+          
+          echo "Usando datasource UID: $DS_UID"
+          
+          # Lê o dashboard JSON do arquivo grafana-dashboard.json
+          if [ -f "grafana-dashboard.json" ]; then
+            echo "✅ Arquivo grafana-dashboard.json encontrado!"
+            
+            # Substitui variáveis do datasource no JSON
+            DASHBOARD_JSON=$(cat grafana-dashboard.json)
+            
+            # Substitui ${DS_INFLUXDB_K6} e ${DataSource} pelo UID real
+            DASHBOARD_JSON=$(echo "$DASHBOARD_JSON" | sed "s/\${DS_INFLUXDB_K6}/$DS_UID/g")
+            DASHBOARD_JSON=$(echo "$DASHBOARD_JSON" | sed "s/\${DataSource}/$DS_UID/g")
+            
+            # Importa o dashboard
+            curl -X POST http://admin:admin123@localhost:3000/api/dashboards/db \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"dashboard\": $DASHBOARD_JSON,
+                \"overwrite\": true
+              }" && echo "✅ Dashboard importado com sucesso!" || echo "⚠️ Erro ao importar dashboard"
+          else
+            echo "⚠️ Arquivo grafana-dashboard.json não encontrado!"
+            echo "Tentando usar k6-dashboard.json..."
+            
+            if [ -f "k6-dashboard.json" ]; then
+              DASHBOARD_JSON=$(cat k6-dashboard.json)
+              DASHBOARD_JSON=$(echo "$DASHBOARD_JSON" | sed "s/P76A45B24F43298D1/$DS_UID/g")
+              
+              curl -X POST http://admin:admin123@localhost:3000/api/dashboards/db \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"dashboard\": $DASHBOARD_JSON,
+                  \"overwrite\": true
+                }" && echo "✅ Dashboard importado!" || echo "⚠️ Erro ao importar"
+            else
+              echo "❌ Nenhum arquivo de dashboard encontrado"
+            fi
+          fi
+        continue-on-error: true
+
+      - name: Expose Grafana with ngrok
+        if: always()
+        run: |
+          echo "Expondo Grafana via ngrok para acesso web..."
+          
+          # Instala ngrok
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update && sudo apt install ngrok -y
+          
+          # Configura ngrok (usa token do secret se disponível)
+          if [ -n "${{ secrets.NGROK_AUTHTOKEN }}" ]; then
+            ngrok config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
+            echo "✅ Ngrok configurado com authtoken"
+          else
+            echo "⚠️ NGROK_AUTHTOKEN não configurado. Usando ngrok sem autenticação (pode ter limitações)"
+            echo "Para melhor experiência, configure o secret NGROK_AUTHTOKEN no GitHub"
+          fi
+          
+          # Inicia ngrok em background
+          ngrok http 3000 --log=stdout > /tmp/ngrok.log 2>&1 &
+          sleep 8
+          
+          # Obtém URL pública
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null | grep -o '"public_url":"https://[^"]*"' | head -1 | cut -d'"' -f4)
+          
+          if [ -n "$NGROK_URL" ]; then
+            echo ""
+            echo "🌐 ========================================"
+            echo "   GRAFANA DISPONÍVEL PUBLICAMENTE!"
+            echo "🌐 ========================================"
+            echo ""
+            echo "📊 Link do Dashboard:"
+            echo "   $NGROK_URL"
+            echo ""
+            echo "🔐 Credenciais:"
+            echo "   Usuário: admin"
+            echo "   Senha: admin123"
+            echo ""
+            echo "📈 Dashboard: K6 Performance Test - ViaCEP"
+            echo ""
+            echo "🌐 ========================================"
+            echo ""
+            echo "::notice title=Grafana Dashboard::Acesse o dashboard em $NGROK_URL"
+            echo "GRAFANA_URL=$NGROK_URL" >> $GITHUB_ENV
+          else
+            echo "⚠️ Não foi possível obter URL do ngrok"
+            echo "Logs do ngrok:"
+            cat /tmp/ngrok.log || true
+            echo ""
+            echo "💡 Dica: Configure o secret NGROK_AUTHTOKEN no GitHub para melhor experiência"
+          fi
+        continue-on-error: true
+
+      - name: Show InfluxDB data summary
+        if: always()
+        run: |
+          echo "📊 Resumo dos dados no InfluxDB:"
+          echo ""
+          docker exec influxdb influx -database k6_metrics -username admin -password admin123456 -execute "SELECT COUNT(*) FROM http_req_duration WHERE time > now() - 1h" 2>/dev/null || echo "Dados ainda não disponíveis (normal se o teste acabou de executar)"
+        continue-on-error: true
+
+      - name: Keep services running
+        if: always()
+        run: |
+          echo ""
+          echo "📊 ========================================"
+          echo "   RESUMO DO TESTE"
+          echo "📊 ========================================"
+          echo ""
+          echo ""
+          echo "Os serviços continuarão rodando por 30 minutos"
+          echo "para você poder acessar o dashboard."
+          echo ""
+          # Mantém os serviços rodando por 30 minutos
+          sleep 1800
+        continue-on-error: true
+

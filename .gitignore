@@ -1,0 +1,10 @@
+# Binário do k6 (baixe com download-k6.ps1)
+k6.exe
+
+# Variáveis de ambiente locais (use env.example como modelo)
+.env
+
+# Resultados de execução
+*.log
+results/
+summary*.json
