@@ -3584,8 +3584,8 @@
     ]
   },
   "time": {
-    "from": "2025-04-25T16:07:46.764Z",
-    "to": "2025-04-25T16:09:41.991Z"
+    "from": "now-15m",
+    "to": "now"
   },
   "timepicker": {},
   "timezone": "browser",
