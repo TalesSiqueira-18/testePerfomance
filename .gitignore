@@ -10,5 +10,8 @@ results/
 summary*.json
 relatorios/
 
+# InfluxDB + Grafana portáteis baixados pelo grafana-local.ps1 (~400 MB)
+ferramentas/
+
 # Atalho local com dados de produção do Novo LMS (não versionar)
 rodar-ensaio.ps1

@@ -24,24 +24,52 @@ const SERIE = required('SERIE'); // ex.: 1ª Série (exatamente como aparece no 
 const VUS = parseInt(__ENV.VUS || '5');
 const DURATION = __ENV.DURATION || '1m';
 
+// TIPO=carga    → sobe até VUS, mantém por DURATION e desce (padrão)
+// TIPO=ruptura  → sobe em degraus de DEGRAU professores a cada DURATION até VUS,
+//                 e PARA SOZINHO quando o sistema quebra (só rodar à noite, com aviso)
+const TIPO = (__ENV.TIPO || 'carga').trim();
+const DEGRAU = parseInt(__ENV.DEGRAU || '25');
+
+function estagiosCarga() {
+  return [
+    { duration: '30s', target: VUS }, // professores vão chegando
+    { duration: DURATION, target: VUS }, // todos usando ao mesmo tempo
+    { duration: '30s', target: 0 }, // vão saindo
+  ];
+}
+
+function estagiosRuptura() {
+  const estagios = [];
+  for (let alvo = DEGRAU; alvo <= VUS; alvo += DEGRAU) {
+    estagios.push({ duration: '15s', target: alvo }); // sobe para o próximo degrau
+    estagios.push({ duration: DURATION, target: alvo }); // segura o degrau
+  }
+  return estagios;
+}
+
+const thresholdsCarga = {
+  // Valores iniciais — combinar os limites oficiais com a Naty
+  http_req_failed: ['rate<0.01'],
+  http_req_duration: ['p(95)<2000'],
+  checks: ['rate>0.99'],
+};
+
+// Freio automático: considera que "quebrou" com mais de 10% de erro ou p95 acima de 10 s
+const thresholdsRuptura = {
+  http_req_failed: [{ threshold: 'rate<0.10', abortOnFail: true, delayAbortEval: '30s' }],
+  http_req_duration: [{ threshold: 'p(95)<10000', abortOnFail: true, delayAbortEval: '30s' }],
+  checks: ['rate>0.90'],
+};
+
 export const options = {
   scenarios: {
     professores_abrindo_conteudos: {
       executor: 'ramping-vus',
       startVUs: 0,
-      stages: [
-        { duration: '30s', target: VUS }, // professores vão chegando
-        { duration: DURATION, target: VUS }, // todos usando ao mesmo tempo
-        { duration: '30s', target: 0 }, // vão saindo
-      ],
+      stages: TIPO === 'ruptura' ? estagiosRuptura() : estagiosCarga(),
     },
   },
-  thresholds: {
-    // Valores iniciais — combinar os limites oficiais com a Naty
-    http_req_failed: ['rate<0.01'],
-    http_req_duration: ['p(95)<2000'],
-    checks: ['rate>0.99'],
-  },
+  thresholds: TIPO === 'ruptura' ? thresholdsRuptura : thresholdsCarga,
 };
 
 // Cada tipo de chamada do Supabase usa headers um pouco diferentes

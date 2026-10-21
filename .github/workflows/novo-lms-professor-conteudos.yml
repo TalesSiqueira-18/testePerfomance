@@ -6,14 +6,26 @@ name: Novo LMS - Professores abrindo Conteudos
 on:
   workflow_dispatch:
     inputs:
+      tipo:
+        description: 'carga = nível fixo | ruptura = sobe em degraus até quebrar (SÓ À NOITE, com aviso)'
+        required: true
+        type: choice
+        options:
+          - carga
+          - ruptura
+        default: carga
       vus:
-        description: 'Quantos professores simultâneos (carga alta só à noite)'
+        description: 'Professores simultâneos (na ruptura: o máximo a tentar)'
         required: true
         default: '5'
       duration:
-        description: 'Tempo com todos os professores ao mesmo tempo (ex.: 1m, 5m)'
+        description: 'Tempo com a carga (na ruptura: tempo de cada degrau)'
         required: true
         default: '1m'
+      degrau:
+        description: 'Só na ruptura: quantos professores somar a cada degrau'
+        required: true
+        default: '25'
       turma:
         description: 'Turma usada em docente_desempenho_capitulos'
         required: true
@@ -30,7 +42,7 @@ concurrency:
 
 jobs:
   carga:
-    name: Teste de carga - ${{ inputs.vus }} professores
+    name: Teste de ${{ inputs.tipo }} - ${{ inputs.vus }} professores
     runs-on: ubuntu-latest
 
     steps:
@@ -107,6 +119,8 @@ jobs:
           SERIE: ${{ inputs.serie }}
           VUS: ${{ inputs.vus }}
           DURATION: ${{ inputs.duration }}
+          TIPO: ${{ inputs.tipo }}
+          DEGRAU: ${{ inputs.degrau }}
 
       - name: Keep Grafana running (30 min)
         run: |
