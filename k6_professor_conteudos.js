@@ -138,6 +138,21 @@ export function setup() {
   if (minutosRestantes < 5) {
     throw new Error('Token expirado ou quase expirando — faça login de novo e copie um token novo.');
   }
+
+  // Uma chamada de teste antes de soltar a carga: se falhar, para tudo e mostra o motivo
+  const teste = http.post(
+    `${SUPABASE_URL}/rest/v1/rpc/get_user_profile`,
+    JSON.stringify({ _user_id: USER_ID }),
+    { headers: headersRpc, tags: { name: 'setup: teste do token' } }
+  );
+  if (teste.status !== 200) {
+    throw new Error(
+      `Chamada de teste falhou com status ${teste.status} — ` +
+        `${teste.status === 401 ? 'token inválido: copie de novo (só o texto que começa com eyJ)' : 'veja a mensagem'}: ` +
+        `${String(teste.body).slice(0, 200)}`
+    );
+  }
+  console.log('Chamada de teste OK (status 200). Iniciando a carga.');
 }
 
 export default function () {
