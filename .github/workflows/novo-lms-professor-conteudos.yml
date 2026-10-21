@@ -1,0 +1,115 @@
+name: Novo LMS - Professores abrindo Conteudos
+
+# ATENÇÃO: este teste roda contra PRODUÇÃO.
+# Só roda manualmente (Actions > este workflow > Run workflow) — nunca por push ou agendamento.
+# Antes de rodar: atualize o secret LMS_TOKEN (o token dura 1 hora) e tenha o OK da Naty para a carga.
+on:
+  workflow_dispatch:
+    inputs:
+      vus:
+        description: 'Quantos professores simultâneos (carga alta só à noite)'
+        required: true
+        default: '5'
+      duration:
+        description: 'Tempo com todos os professores ao mesmo tempo (ex.: 1m, 5m)'
+        required: true
+        default: '1m'
+      turma:
+        description: 'Turma usada em docente_desempenho_capitulos'
+        required: true
+        default: '27M1A'
+      serie:
+        description: 'Série usada em docente_desempenho_capitulos'
+        required: true
+        default: '1ª Série'
+
+# Impede dois testes de carga rodando ao mesmo tempo
+concurrency:
+  group: novo-lms-carga
+  cancel-in-progress: false
+
+jobs:
+  carga:
+    name: Teste de carga - ${{ inputs.vus }} professores
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install K6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Start InfluxDB 1.7
+        run: |
+          docker run -d --name influxdb -p 8086:8086 \
+            -e INFLUXDB_DB=k6_metrics \
+            -e INFLUXDB_HTTP_AUTH_ENABLED=false \
+            influxdb:1.7
+          for i in {1..30}; do
+            curl -sf http://localhost:8086/ping && echo "✅ InfluxDB pronto" && break
+            sleep 2
+          done
+
+      - name: Start Grafana
+        env:
+          GRAFANA_PASSWORD: ${{ secrets.GRAFANA_PASSWORD }}
+        run: |
+          if [ -z "$GRAFANA_PASSWORD" ]; then
+            echo "❌ Configure o secret GRAFANA_PASSWORD (o Grafana fica público via ngrok)"; exit 1
+          fi
+          docker run -d --name grafana -p 3000:3000 \
+            -e GF_SECURITY_ADMIN_USER=admin \
+            -e GF_SECURITY_ADMIN_PASSWORD="$GRAFANA_PASSWORD" \
+            --link influxdb:influxdb \
+            grafana/grafana:latest
+          for i in {1..30}; do
+            curl -sf http://localhost:3000/api/health && echo "✅ Grafana pronto" && break
+            sleep 2
+          done
+          curl -s -X POST "http://admin:$GRAFANA_PASSWORD@localhost:3000/api/datasources" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"InfluxDB-K6","type":"influxdb","url":"http://influxdb:8086","access":"proxy","isDefault":true,"database":"k6_metrics","jsonData":{"httpMode":"POST"}}'
+
+      - name: Import K6 Dashboard
+        env:
+          GRAFANA_PASSWORD: ${{ secrets.GRAFANA_PASSWORD }}
+        run: |
+          DS_UID=$(curl -s "http://admin:$GRAFANA_PASSWORD@localhost:3000/api/datasources/name/InfluxDB-K6" | jq -r '.uid')
+          DASHBOARD_JSON=$(sed -e "s/\${DS_INFLUXDB_K6}/$DS_UID/g" -e "s/\${DataSource}/$DS_UID/g" grafana-dashboard.json)
+          curl -s -X POST "http://admin:$GRAFANA_PASSWORD@localhost:3000/api/dashboards/db" \
+            -H "Content-Type: application/json" \
+            -d "{\"dashboard\": $DASHBOARD_JSON, \"overwrite\": true}" && echo "✅ Dashboard importado"
+        continue-on-error: true
+
+      - name: Expose Grafana with ngrok
+        run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update -qq && sudo apt install ngrok -y -qq
+          ngrok config add-authtoken "${{ secrets.NGROK_AUTHTOKEN }}"
+          ngrok http 3000 --log=stdout > /tmp/ngrok.log 2>&1 &
+          sleep 8
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          echo "::notice title=Grafana (acompanhe ao vivo)::$NGROK_URL  — usuário admin, senha = secret GRAFANA_PASSWORD"
+        continue-on-error: true
+
+      - name: Run K6 - professores abrindo Conteudos
+        run: |
+          echo "📊 ${VUS} professores por ${DURATION}"
+          k6 run --out influxdb=http://localhost:8086/k6_metrics k6_professor_conteudos.js || echo "⚠️ k6 terminou com falha de threshold ou erro (veja o resumo acima)"
+        env:
+          SUPABASE_URL: ${{ secrets.LMS_SUPABASE_URL }}
+          APIKEY: ${{ secrets.LMS_APIKEY }}
+          TOKEN: ${{ secrets.LMS_TOKEN }}
+          USER_ID: ${{ secrets.LMS_USER_ID }}
+          TURMA: ${{ inputs.turma }}
+          SERIE: ${{ inputs.serie }}
+          VUS: ${{ inputs.vus }}
+          DURATION: ${{ inputs.duration }}
+
+      - name: Keep Grafana running (30 min)
+        run: |
+          echo "Grafana disponível por 30 minutos no link do aviso (notice) acima."
+          echo "Para encerrar antes: Cancel workflow."
+          sleep 1800

@@ -8,3 +8,7 @@ k6.exe
 *.log
 results/
 summary*.json
+relatorios/
+
+# Atalho local com dados de produção do Novo LMS (não versionar)
+rodar-ensaio.ps1

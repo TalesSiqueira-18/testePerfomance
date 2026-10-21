@@ -3,7 +3,7 @@
 Write-Host "Baixando K6 pré-compilado..." -ForegroundColor Green
 
 # URL da última versão do K6 para Windows
-$k6Version = "v0.48.0"
+$k6Version = "v1.0.0"
 $downloadUrl = "https://github.com/grafana/k6/releases/download/$k6Version/k6-$k6Version-windows-amd64.zip"
 $zipFile = "k6.zip"
 
