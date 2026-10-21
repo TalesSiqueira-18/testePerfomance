@@ -15,3 +15,7 @@ ferramentas/
 
 # Atalho local com dados de produção do Novo LMS (não versionar)
 rodar-ensaio.ps1
+validar-rotas.ps1
+
+# Repositório da empresa (Azure DevOps) clonado aqui dentro — tem git próprio
+qa-pd-back-perf-k6/

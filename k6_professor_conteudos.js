@@ -29,10 +29,11 @@ const DURATION = __ENV.DURATION || '1m';
 //                 e PARA SOZINHO quando o sistema quebra (só rodar à noite, com aviso)
 const TIPO = (__ENV.TIPO || 'carga').trim();
 const DEGRAU = parseInt(__ENV.DEGRAU || '25');
+const RAMPA = __ENV.RAMPA || '30s'; // tempo para ir de 0 até VUS no modo carga
 
 function estagiosCarga() {
   return [
-    { duration: '30s', target: VUS }, // professores vão chegando
+    { duration: RAMPA, target: VUS }, // professores vão chegando
     { duration: DURATION, target: VUS }, // todos usando ao mesmo tempo
     { duration: '30s', target: 0 }, // vão saindo
   ];
@@ -49,7 +50,8 @@ function estagiosRuptura() {
 
 const thresholdsCarga = {
   // Valores iniciais — combinar os limites oficiais com a Naty
-  http_req_failed: ['rate<0.01'],
+  // + freio de emergência: se mais da metade das requisições falhar, para o teste (não adianta insistir)
+  http_req_failed: ['rate<0.01', { threshold: 'rate<0.50', abortOnFail: true, delayAbortEval: '1m' }],
   http_req_duration: ['p(95)<2000'],
   checks: ['rate>0.99'],
 };

@@ -13,7 +13,7 @@ $pidsArquivo = Join-Path $ferramentas "pids.txt"
 
 $influxVersao = "1.8.10"
 $influxUrl = "https://dl.influxdata.com/influxdb/releases/influxdb-${influxVersao}_windows_amd64.zip"
-$grafanaVersao = "10.4.2"
+$grafanaVersao = "12.0.0"
 $grafanaUrl = "https://dl.grafana.com/oss/release/grafana-${grafanaVersao}.windows-amd64.zip"
 
 $grafanaUser = "admin"
@@ -33,16 +33,17 @@ function Parar-Servicos {
 if ($Parar) { Parar-Servicos; exit 0 }
 
 function Baixar-Se-Preciso($nome, $url, $pasta) {
-  if (-not (Test-Path $pasta)) {
+  # A instalação só conta como completa quando o arquivo-marcador ".instalado-<url>" existe
+  $marcador = Join-Path $pasta (".instalado-" + (Split-Path $url -Leaf))
+  if (-not (Test-Path $marcador)) {
     Write-Host "Baixando $nome (so na primeira vez)..." -ForegroundColor Cyan
-    New-Item -ItemType Directory -Force $ferramentas | Out-Null
+    New-Item -ItemType Directory -Force $pasta | Out-Null
     $zip = Join-Path $ferramentas "$nome.zip"
     if (-not (Test-Path $zip)) { Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing }
-    New-Item -ItemType Directory -Force "$pasta.tmp" | Out-Null
     # tar (nativo do Windows 10+) extrai zip grande melhor que o Expand-Archive do PowerShell 5.1
-    & tar.exe -xf $zip -C "$pasta.tmp"
-    if ($LASTEXITCODE -ne 0) { Remove-Item "$pasta.tmp" -Recurse -Force; throw "Falha ao extrair $nome" }
-    Rename-Item "$pasta.tmp" (Split-Path $pasta -Leaf)
+    & tar.exe -xf $zip -C $pasta
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao extrair $nome" }
+    New-Item -ItemType File $marcador | Out-Null
     Remove-Item $zip -Force
   }
 }
@@ -105,7 +106,13 @@ Invoke-WebRequest -Uri "http://127.0.0.1:8086/query" -Method Post -UseBasicParsi
   -Body @{ q = "CREATE DATABASE k6_metrics" } | Out-Null
 
 # 2) Grafana
-$grafanaExe = Get-ChildItem $grafanaPasta -Recurse -Filter "grafana-server.exe" | Select-Object -First 1
+# Versões novas usam "grafana.exe server"; as antigas, "grafana-server.exe"
+$grafanaExe = Get-ChildItem $grafanaPasta -Recurse -Filter "grafana.exe" | Where-Object { $_.Directory.Name -eq "bin" } | Select-Object -First 1
+$grafanaArgs = "server"
+if (-not $grafanaExe) {
+  $grafanaExe = Get-ChildItem $grafanaPasta -Recurse -Filter "grafana-server.exe" | Select-Object -First 1
+  $grafanaArgs = ""
+}
 $grafanaHome = Split-Path (Split-Path $grafanaExe.FullName)
 $env:GF_SECURITY_ADMIN_USER = $grafanaUser
 $env:GF_SECURITY_ADMIN_PASSWORD = $grafanaSenha
@@ -113,7 +120,7 @@ $env:GF_SERVER_HTTP_ADDR = "127.0.0.1"
 $env:GF_ANALYTICS_REPORTING_ENABLED = "false"
 $env:GF_ANALYTICS_CHECK_FOR_UPDATES = "false"
 Write-Host "Iniciando Grafana (na 1a vez pode levar 1-2 min)..." -ForegroundColor Cyan
-$pGrafana = Start-Process -FilePath $grafanaExe.FullName -ArgumentList "--homepath `"$grafanaHome`"" `
+$pGrafana = Start-Process -FilePath $grafanaExe.FullName -ArgumentList "$grafanaArgs --homepath `"$grafanaHome`"" `
   -WorkingDirectory $grafanaHome -WindowStyle Hidden -PassThru
 "$pInfluxId`n$($pGrafana.Id)" | Set-Content $pidsArquivo
 Esperar "Grafana" "http://127.0.0.1:3000/api/health" @{}
